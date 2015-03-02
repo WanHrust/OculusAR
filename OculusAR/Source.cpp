@@ -53,6 +53,12 @@ least with mirroring enabled.
 #include <OVR_CAPI_D3D.h>
 #include <D3DX11.h>
 #include <D3Dcompiler.h>
+
+// Entrypoint
+//#include <EntryPoint.h>     //!<Cross platform for common entry point
+
+#include <ovrvision.h>        //Ovrvision SDK
+
 #include <algorithm>
 #include <vector>
 #include <xnamath.h>
@@ -63,10 +69,46 @@ using namespace D3D11Framework;
 
 const LPWSTR ClassName = L"SimpleOVR_D3D11";
 
-InputMgr *inputMgr = nullptr; 
+
+//Oculus Rift screen size
+#define RIFTSCREEN_WIDTH    (1920)
+#define RIFTPSCREEN_HEIGHT  (1080)
+
+//Application screen size
+#define APPSCREEN_WIDTH     (1280)
+#define APPSCREEN_HEIGHT    (800)
+
+//Camera image size
+#define CAM_WIDTH           640
+#define CAM_HEIGHT          480
+
+/*
+typedef enum ov_psqt {
+OV_PSQT_NONE = 0,       //No Processing quality
+OV_PSQT_LOW = 1,        //Low Processing quality
+OV_PSQT_HIGH = 2,       //High Processing quality
+OV_PSQT_REFSET = 3,     //RefOnly Processing quality
+} OvPSQuality;
+
+typedef enum ov_hmdprop {
+OV_HMD_OCULUS_OTHER = 0,
+OV_HMD_OCULUS_DK1,
+OV_HMD_OCULUS_DK2,
+} HmdProp;
+*/
+//Interocular distance
+float eye_interocular = 0.0f;
+//Eye scale
+float eye_scale = 0.9f;
+//Quality
+int processer_quality = OVR::OV_PSQT_HIGH;
+//use AR
+bool useOvrvisionAR = false;
+
+InputMgr *inputMgr = nullptr;
 MyInput *input = nullptr;
 float scaleAmount = 1.0f;
-OVR::Vector3f translateAmount = OVR::Vector3f(0.0f, 0.0f, 5.0f);
+OVR::Vector3f translateAmount = OVR::Vector3f(0.0f, 0.0f, 0.0f);
 /*
 Number of rendered pixels per display pixel. Generally you want this set at 1.0, but you
 can gain some performance by setting it lower in exchange for a more blurry result.
@@ -75,17 +117,22 @@ const float PixelsPerDisplayPixel = 1.0f;
 const int MultisampleCount = 4; // Set to 1 to disable multisampling
 
 // Commonly used vectors.
-const OVR::Vector3f	RightVector(1.0f, 0.0f, 0.0f);
-const OVR::Vector3f	UpVector(0.0f, 1.0f, 0.0f);
-const OVR::Vector3f	ForwardVector(0.0f, 0.0f, -1.0f);
+const OVR::Vector3f RightVector(1.0f, 0.0f, 0.0f);
+const OVR::Vector3f UpVector(0.0f, 1.0f, 0.0f);
+const OVR::Vector3f ForwardVector(0.0f, 0.0f, -1.0f);
 
+
+ID3D11ShaderResourceView *m_pTextureRV = nullptr;
+ID3D11ShaderResourceView *m_pTextureRV2 = nullptr;
+
+ID3D11SamplerState *m_pSamplerLinear = nullptr;
 
 // Position and angle of the player's body. In a real project these are probably not constant,
 // but we're keeping things simple here.
 const OVR::Vector3f BodyPosition{ 0.5f, 0.5f, 0 };
 const OVR::Anglef BodyYaw{ 0.9f };
 
-    
+
 ID3D11Buffer* SetupScene(ID3D11Device* d3dDevice, ID3D11DeviceContext* d3dContext);
 void DestroyScene();
 
@@ -98,9 +145,9 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
 	case WM_MOUSEMOVE: case WM_LBUTTONUP: case WM_LBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDOWN: case WM_MOUSEWHEEL: case WM_KEYDOWN: case WM_KEYUP:
 		if (inputMgr)
 			inputMgr->Run(msg, wParam, lParam);
-		scaleAmount=input->getScale();
+		scaleAmount = input->getScale();
 		translateAmount = input->translate;
-		
+
 		return 0;
 	}
 
@@ -119,6 +166,9 @@ int main() {
 	ovrSizei renderTargetSize;
 	ovrD3D11Texture vrEyeTexture[2];
 	ovrD3D11Config vrRenderConfiguration;
+
+	//Objects
+	OVR::Ovrvision* g_pOvrvision;
 
 	ID3D11Texture2D* d3dDepthStencilTexture = nullptr;
 	ID3D11DepthStencilView* d3dDepthStencilView = nullptr;
@@ -156,12 +206,12 @@ int main() {
 	input = new MyInput();
 	inputMgr->AddListener(input);
 
-	
 	/*
 	LibOVR Initialization part.
 	Beware, LibOVR may be a bit picky about when you perform the various steps. ovr_Initialize
 	must be called before you start initializing Direct3D.
 	*/
+
 	ovr_Initialize();
 
 	vrHmd = ovrHmd_Create(0);
@@ -222,6 +272,17 @@ int main() {
 		nullptr,
 		nullptr,
 		nullptr);
+
+	//Create ovrvision object
+	g_pOvrvision = new OVR::Ovrvision();
+	if (vrHmd->Type == ovrHmd_DK2) {
+		//Rift DK2
+		g_pOvrvision->Open(0, OVR::OV_CAMVGA_FULL);  //Open
+	}
+	else {
+		//Rift DK1
+		g_pOvrvision->Open(0, OVR::OV_CAMVGA_FULL, OVR::OV_HMD_OCULUS_DK1);  //Open
+	}
 
 	/*
 	D3D11 initialization.
@@ -386,7 +447,7 @@ int main() {
 	// interesting so I have hidden it in a separate function.
 	auto d3dConstantBuffer = SetupScene(d3dDevice, d3dContext);
 
-	
+
 
 	bool keepRunning = true;
 	while (keepRunning) {
@@ -400,7 +461,7 @@ int main() {
 			// Many other VR applications use F12 for recentering.
 			if (msg.message == WM_KEYDOWN) {
 				if (input->recenter == true)
-				ovrHmd_RecenterPose(vrHmd);
+					ovrHmd_RecenterPose(vrHmd);
 				ovrHmd_DismissHSWDisplay(vrHmd);
 			}
 
@@ -448,7 +509,7 @@ int main() {
 			std::memcpy(d3dMappedStatus2.pData, &transposedScaling, sizeof(float)* 16);
 			d3dContext->Unmap(d3dConstantBuffer, 0);
 			*/
-		
+
 
 
 			// Calculate projection and view for the current eye. You'll probably replace all of this in
@@ -461,19 +522,22 @@ int main() {
 				BodyPosition + quatBodyRotation.Rotate(currentEyePose.Translation) // Final position (body AND eye)
 				);
 
-			
 			OVR::Matrix4f scale = OVR::Matrix4f::Scaling(scaleAmount);
 			OVR::Matrix4f translate = OVR::Matrix4f::Translation(translateAmount);
-			OVR::Matrix4f result = scale*translate;
+			OVR::Matrix4f rotate = OVR::Matrix4f::RotationY(0);
+			OVR::Matrix4f cubeFinalTransform = translate*scale*rotate;
 
+			d3dContext->PSSetShaderResources(0, 1, &m_pTextureRV);
+			d3dContext->PSSetSamplers(0, 1, &m_pSamplerLinear);
 
 
 			auto up = worldPose.Rotation.Rotate(UpVector);
 			auto forward = worldPose.Rotation.Rotate(ForwardVector);
 
 			OVR::Matrix4f view = OVR::Matrix4f::LookAtRH(worldPose.Translation, worldPose.Translation + forward, up);
-
-			OVR::Matrix4f matrixViewProjection = projection * view * result;
+			//view = OVR::Matrix4f::Identity();
+			OVR::Matrix4f matrixViewProjection = projection  * cubeFinalTransform;
+			//OVR::Matrix4f matrixViewProjection = projection * view * cubeFinalTransform;
 
 			//ovrMatrix4f scale = 
 			// Send the View-Projection matrix to the Vertex Shader.
@@ -484,7 +548,25 @@ int main() {
 			std::memcpy(d3dMappedStatus.pData, &transposedMvp, sizeof(float)* 16);
 			d3dContext->Unmap(d3dConstantBuffer, 0);
 
-			d3dContext->DrawIndexed(36, 0, 0);
+			d3dContext->DrawIndexed(6, 0, 0);
+
+			translate = OVR::Matrix4f::Translation(0.0f, 0.0f, -2.0f);
+			scale = OVR::Matrix4f::Scaling(scaleAmount);
+			rotate = OVR::Matrix4f::RotationY(0);
+
+			d3dContext->PSSetShaderResources(0, 1, &m_pTextureRV2);
+			d3dContext->PSSetSamplers(0, 1, &m_pSamplerLinear);
+
+			cubeFinalTransform = translate*scale*rotate;
+
+
+			matrixViewProjection = projection * view * cubeFinalTransform;
+			transposedMvp = matrixViewProjection.Transposed();
+			ms = d3dContext->Map(d3dConstantBuffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &d3dMappedStatus);
+			std::memcpy(d3dMappedStatus.pData, &transposedMvp, sizeof(float)* 16);
+			d3dContext->Unmap(d3dConstantBuffer, 0);
+
+			d3dContext->DrawIndexed(6, 0, 0);
 		}
 
 		if (MultisampleCount > 1) {
@@ -512,6 +594,13 @@ int main() {
 	if (d3dIntermediaryTexture != nullptr) {
 		d3dIntermediaryTexture->Release();
 	}
+
+	//Clean up Wizapply library
+	delete g_pOvrvision;
+
+
+	/*------------------------------------------------------------------*/
+
 	d3dDepthStencilView->Release();
 	d3dDepthStencilTexture->Release();
 	d3dEyeTextureRenderTargetView->Release();
@@ -534,40 +623,40 @@ but this example would be fairly boring without anything to look at.
 
 const char* VertexShaderCode =
 "cbuffer Constants {"
-"	float4x4 mvp;"
+"   float4x4 mvp;"
 "};"
 "struct VS_OUTPUT"
 "{"
-"	float4 Pos : SV_POSITION; "
-"	float4 Color : COLOR0;"
+"   float4 Pos : SV_POSITION; "
+"   float4 Color : COLOR0;"
 "};"
 "VS_OUTPUT main(float4 Pos : POSITION, float4 Color : Color) {"
-"	VS_OUTPUT output = (VS_OUTPUT)0;"
-"	output.Pos = mul(mvp, Pos);"
-"	output.Color = Color;"
-"	return output;"
+"   VS_OUTPUT output = (VS_OUTPUT)0;"
+"   output.Pos = mul(mvp, Pos);"
+"   output.Color = Color;"
+"   return output;"
 "}";
 
 const char* PixelShaderCode =
 "struct VS_OUTPUT"
 "{"
 "float4 Pos : SV_POSITION; "
-"	float4 Color : COLOR0;"
+"   float4 Color : COLOR0;"
 "}; "
 "float4 main(VS_OUTPUT input) : SV_Target"
 "{"
-"	return input.Color;"
-	"}";
+"   return input.Color;"
+"}";
 
 /*
 struct Vertex {
-	float Position[3];
+float Position[3];
 };
 */
 struct SimpleVertex
 {
 	XMFLOAT3 Pos;
-	XMFLOAT4 Color;
+	XMFLOAT2 Tex;
 };
 
 ID3D11InputLayout* d3dInputLayout = nullptr;
@@ -576,51 +665,101 @@ ID3D11PixelShader* d3dPixelShader = nullptr;
 ID3D11Buffer* d3dConstantBuffer = nullptr;
 ID3D11Buffer* d3dVertexBuffer = nullptr;
 
+
+
 ID3D11Buffer* SetupScene(ID3D11Device* d3dDevice, ID3D11DeviceContext* d3dContext) {
 	ID3D10Blob* d3dBlobVertexShader = nullptr;
 	ID3D10Blob* d3dBlobPixelShader = nullptr;
 
 	// The vertices of our scene. Perhaps not very exciting.
 	/*std::vector<Vertex> vertices = {
-		Vertex{ { -1, -1, -0.5 } },
-		Vertex{ { -1, 1, -1.5 } },
-		Vertex{ { 1, -1, -0.5 } },
-	};
-	
-	*/
-	SimpleVertex vertices[] =
-	{
-		{ XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT4(0.7f, 0.7f, 0.7f, 1.0f) },
-		{ XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT4(0.7f, 0.7f, 0.7f, 1.0f) },
-		{ XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT4(0.7f, 0.7f, 0.7f, 1.0f) },
-		{ XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT4(0.7f, 0.7f, 0.7f, 1.0f) },
-		{ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT4(0.7f, 0.7f, 0.7f, 1.0f) },
-		{ XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT4(0.7f, 0.7f, 0.7f, 1.0f) },
-		{ XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT4(0.7f, 0.7f, 0.7f, 1.0f) },
-		{ XMFLOAT3(-1.0f, -1.0f, 1.0f), XMFLOAT4(0.7f, 0.7f, 0.7f, 1.0f) },
+	Vertex{ { -1, -1, -0.5 } },
+	Vertex{ { -1, 1, -1.5 } },
+	Vertex{ { 1, -1, -0.5 } },
 	};
 
-	
+
+	SimpleVertex vertices[] =
+	{
+	{ XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT2(1.0f, 1.0f) },
+	{ XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f) },
+
+	{ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT2(1.0f, 1.0f) },
+	{ XMFLOAT3(-1.0f, -1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f) },
+
+	{ XMFLOAT3(-1.0f, -1.0f, 1.0f), XMFLOAT2(0.0f, 0.0f) },
+	{ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+	{ XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) },
+	{ XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f) },
+
+	{ XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT2(0.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) },
+	{ XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f) },
+
+	{ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) },
+	{ XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) },
+
+	{ XMFLOAT3(-1.0f, -1.0f, 1.0f), XMFLOAT2(0.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, -1.0f, 1.0f), XMFLOAT2(1.0f, 0.0f) },
+	{ XMFLOAT3(1.0f, 1.0f, 1.0f), XMFLOAT2(1.0f, 1.0f) },
+	{ XMFLOAT3(-1.0f, 1.0f, 1.0f), XMFLOAT2(0.0f, 1.0f) },
+	};
+
+
 
 	WORD indices[] =
 	{
-		3, 1, 0,
-		2, 1, 3,
+	3, 1, 0,
+	2, 1, 3,
 
-		0, 5, 4,
-		1, 5, 0,
+	0, 5, 4,
+	1, 5, 0,
 
-		3, 4, 7,
-		0, 4, 3,
+	3, 4, 7,
+	0, 4, 3,
 
-		1, 6, 5,
-		2, 6, 1,
+	1, 6, 5,
+	2, 6, 1,
 
-		2, 7, 6,
-		3, 7, 2,
+	2, 7, 6,
+	3, 7, 2,
 
-		6, 4, 5,
-		7, 4, 6,
+	6, 4, 5,
+	7, 4, 6,
+	};
+	*/
+
+	// Simple array of type SimpleVertex which stores information about vertices of each plane (in this case we have 2 planes) 
+	SimpleVertex vertices[] =
+	{
+		{ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+		{ XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) },
+
+		{ XMFLOAT3(-1.0f, -1.0f, -1.0f), XMFLOAT2(0.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, -1.0f, -1.0f), XMFLOAT2(1.0f, 1.0f) },
+		{ XMFLOAT3(1.0f, 1.0f, -1.0f), XMFLOAT2(1.0f, 0.0f) },
+		{ XMFLOAT3(-1.0f, 1.0f, -1.0f), XMFLOAT2(0.0f, 0.0f) },
+	};
+
+	/*XMFLOAT2(0.0f, 1.0f)
+	XMFLOAT2(1.0f, 1.0f)
+	XMFLOAT2(1.0f, 0.0f)
+	XMFLOAT2(0.0f, 0.0f)
+	*/
+	// Simple array of type WORD which hold the order of indices for each triangle that we will draw. (to draw a plane we need 2 triangles)
+	WORD indices[] =
+	{
+		3, 1, 0,        //first triangle
+		2, 1, 3,        //second triangle
 	};
 
 	HRESULT hr = S_OK;
@@ -647,12 +786,18 @@ ID3D11Buffer* SetupScene(ID3D11Device* d3dDevice, ID3D11DeviceContext* d3dContex
 
 	d3dDevice->CreatePixelShader(d3dBlobPixelShader->GetBufferPointer(), d3dBlobPixelShader->GetBufferSize(), nullptr, &d3dPixelShader);
 
+
+	// This code tells Direct3D how to read the block of data in memory.
+	//For this we create InputLayout. We are telling what the first entry will be vertex position and the second  Texture Coordinates. 
 	D3D11_INPUT_ELEMENT_DESC inputElements[] = {
 		{ "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
-		{ "COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+		{ "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D11_INPUT_PER_VERTEX_DATA, 0 },
 	};
+	UINT numElements = ARRAYSIZE(inputElements);
 	//HRESULT hr = S_OK;
-	hr = d3dDevice->CreateInputLayout(inputElements, 2, d3dBlobVertexShader->GetBufferPointer(), d3dBlobVertexShader->GetBufferSize(), &d3dInputLayout);
+	hr = d3dDevice->CreateInputLayout(inputElements, numElements, d3dBlobVertexShader->GetBufferPointer(), d3dBlobVertexShader->GetBufferSize(), &d3dInputLayout);
+	if FAILED(hr)
+		return false;
 	d3dContext->IASetInputLayout(d3dInputLayout);
 	D3D11_BUFFER_DESC vbDesc;
 	ZeroMemory(&vbDesc, sizeof(vbDesc));
@@ -684,8 +829,8 @@ ID3D11Buffer* SetupScene(ID3D11Device* d3dDevice, ID3D11DeviceContext* d3dContex
 
 	d3dContext->IASetIndexBuffer(m_pIndexBuffer, DXGI_FORMAT_R16_UINT, 0);
 	d3dContext->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	
-	
+
+
 	D3D11_BUFFER_DESC cbDesc;
 	ZeroMemory(&cbDesc, sizeof(cbDesc));
 	cbDesc.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
@@ -693,7 +838,29 @@ ID3D11Buffer* SetupScene(ID3D11Device* d3dDevice, ID3D11DeviceContext* d3dContex
 	cbDesc.Usage = D3D11_USAGE_DYNAMIC;
 	cbDesc.ByteWidth = sizeof(float)* 16;
 
-	d3dDevice->CreateBuffer(&cbDesc, nullptr, &d3dConstantBuffer);
+	hr = D3DX11CreateShaderResourceViewFromFile(d3dDevice, L"D:\\texture_out.png", NULL, NULL, &m_pTextureRV, NULL);
+	if (FAILED(hr))
+		return false;
+	hr = D3DX11CreateShaderResourceViewFromFile(d3dDevice, L"D:\\texture_in.jpg", NULL, NULL, &m_pTextureRV2, NULL);
+	if (FAILED(hr))
+		return false;
+
+	D3D11_SAMPLER_DESC sampDesc;
+	ZeroMemory(&sampDesc, sizeof(sampDesc));
+	sampDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+	sampDesc.AddressU = D3D11_TEXTURE_ADDRESS_WRAP;
+	sampDesc.AddressV = D3D11_TEXTURE_ADDRESS_WRAP;
+	sampDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+	sampDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+	sampDesc.MinLOD = 0;
+	sampDesc.MaxLOD = D3D11_FLOAT32_MAX;
+	hr = d3dDevice->CreateSamplerState(&sampDesc, &m_pSamplerLinear);
+	if (FAILED(hr))
+		return false;
+
+	hr = d3dDevice->CreateBuffer(&cbDesc, nullptr, &d3dConstantBuffer);
+	if (FAILED(hr))
+		return false;
 	/*
 	UINT stride = sizeof(Vertex);
 	UINT offset = 0;
@@ -704,7 +871,12 @@ ID3D11Buffer* SetupScene(ID3D11Device* d3dDevice, ID3D11DeviceContext* d3dContex
 
 	d3dContext->VSSetShader(d3dVertexShader, nullptr, 0);
 	d3dContext->PSSetShader(d3dPixelShader, nullptr, 0);
+
+
+
 	d3dContext->VSSetConstantBuffers(0, 1, &d3dConstantBuffer);
+
+
 
 	d3dBlobPixelShader->Release();
 	d3dBlobVertexShader->Release();
@@ -718,4 +890,6 @@ void DestroyScene() {
 	d3dInputLayout->Release();
 	d3dVertexShader->Release();
 	d3dPixelShader->Release();
+	m_pSamplerLinear->Release();
+	m_pTextureRV->Release();
 }
