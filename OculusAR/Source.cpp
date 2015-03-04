@@ -82,20 +82,7 @@ const LPWSTR ClassName = L"SimpleOVR_D3D11";
 #define CAM_WIDTH           640
 #define CAM_HEIGHT          480
 
-/*
-typedef enum ov_psqt {
-OV_PSQT_NONE = 0,       //No Processing quality
-OV_PSQT_LOW = 1,        //Low Processing quality
-OV_PSQT_HIGH = 2,       //High Processing quality
-OV_PSQT_REFSET = 3,     //RefOnly Processing quality
-} OvPSQuality;
 
-typedef enum ov_hmdprop {
-OV_HMD_OCULUS_OTHER = 0,
-OV_HMD_OCULUS_DK1,
-OV_HMD_OCULUS_DK2,
-} HmdProp;
-*/
 //Interocular distance
 float eye_interocular = 0.0f;
 //Eye scale
@@ -114,7 +101,7 @@ Number of rendered pixels per display pixel. Generally you want this set at 1.0,
 can gain some performance by setting it lower in exchange for a more blurry result.
 */
 const float PixelsPerDisplayPixel = 1.0f;
-const int MultisampleCount = 4; // Set to 1 to disable multisampling
+const int MultisampleCount = 1; // Set to 1 to disable multisampling
 
 // Commonly used vectors.
 const OVR::Vector3f RightVector(1.0f, 0.0f, 0.0f);
@@ -364,6 +351,65 @@ int main() {
 
 	d3dDevice->CreateDepthStencilView(d3dDepthStencilTexture, &descStencilView, &d3dDepthStencilView);
 
+	// Get ovrvision image
+	g_pOvrvision->PreStoreCamData();	//renderer
+	unsigned char* p = g_pOvrvision->GetCamImage(OVR::OV_CAMEYE_LEFT, (OVR::OvPSQuality)processer_quality);
+	unsigned char* p2 = g_pOvrvision->GetCamImage(OVR::OV_CAMEYE_RIGHT, (OVR::OvPSQuality)processer_quality);
+	
+	unsigned char *texArray = (unsigned char *)malloc(4 * 2364 * 1461 * sizeof(unsigned char));
+
+	for (int i = 0; i < 4 * 2364 * 1461; i++) {
+		
+		if (i >= 4 * 640 * 480)
+		{
+			if (i % 4 == 3){
+				texArray[i] = 0;
+			}
+			else
+			{
+				texArray[i] = (unsigned char)125;
+			}
+		}
+		else
+		{
+
+			if (i % 4 == 3){
+				texArray[i] = 0;
+			}
+			else
+			{
+				texArray[i] = p[i];
+			}
+		}
+	}
+
+	//int texArraysize = texArray.
+	D3D11_TEXTURE2D_DESC desc;
+	ZeroMemory(&desc, sizeof(desc));
+	desc.Width = renderTargetSize.w;
+	desc.Height = renderTargetSize.h;
+	desc.MipLevels = desc.ArraySize = 1;
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.SampleDesc.Quality = 0;
+	desc.Usage = D3D11_USAGE_DYNAMIC;
+	desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+	desc.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+	desc.MiscFlags = 0;
+
+	ID3D11Texture2D *pTexture = NULL;
+
+	D3D11_SUBRESOURCE_DATA TexInitData;
+	ZeroMemory(&TexInitData, sizeof(D3D11_SUBRESOURCE_DATA));
+	TexInitData.pSysMem = texArray;
+	TexInitData.SysMemPitch = static_cast<UINT>(2364 * 3);
+	TexInitData.SysMemSlicePitch = static_cast<UINT>(3 * 2364 * 1461 * sizeof(unsigned char));
+
+	d3dDevice->CreateTexture2D(&desc, &TexInitData, &d3dEyeTexture);
+	d3dDevice->CreateShaderResourceView(d3dEyeTexture, nullptr, &d3dEyeTextureShaderResourceView);
+	d3dDevice->CreateRenderTargetView(d3dEyeTexture, nullptr, &d3dEyeTextureRenderTargetView);
+
+	/*
 	// Allocate a texture that will hold both (undistorted) eye views. Later we'll let LibOVR use this texture
 	// to render the final distorted view to the HMD.
 	D3D11_TEXTURE2D_DESC texdesc;
@@ -379,7 +425,7 @@ int main() {
 	d3dDevice->CreateTexture2D(&texdesc, nullptr, &d3dEyeTexture);
 	d3dDevice->CreateShaderResourceView(d3dEyeTexture, nullptr, &d3dEyeTextureShaderResourceView);
 	d3dDevice->CreateRenderTargetView(d3dEyeTexture, nullptr, &d3dEyeTextureRenderTargetView);
-
+	*/
 	if (MultisampleCount > 1) {
 		// This render target is ONLY used for multisampling. More comments up at the variable declarations.
 		D3D11_TEXTURE2D_DESC texdesc;
@@ -468,6 +514,12 @@ int main() {
 			TranslateMessage(&msg);
 			DispatchMessage(&msg);
 		}
+
+		// Get ovrvision image
+		g_pOvrvision->PreStoreCamData();	//renderer
+		unsigned char* p = g_pOvrvision->GetCamImage(OVR::OV_CAMEYE_LEFT, (OVR::OvPSQuality)processer_quality);
+		unsigned char* p2 = g_pOvrvision->GetCamImage(OVR::OV_CAMEYE_RIGHT, (OVR::OvPSQuality)processer_quality);
+
 
 		// Rendering part
 		ovrHmd_BeginFrame(vrHmd, 0);
